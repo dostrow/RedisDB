@@ -160,6 +160,16 @@ will retrieve information about all cluster nodes and slots mappings.
 
 Password, if redis server requires authentication.
 
+=item ssl
+
+When set connect using SSL/TLS. This requires IO::Socket::SSL. Default value is
+0, set to 1 to enable.
+
+=item ssl_verify_mode
+
+This parameter sets the verification mode when C<ssl> is enabled. It defaults to
+SSL_VERIFY_PEER. See IO:Socket::SSL documentation for additional options.
+
 =back
 
 =cut
@@ -172,6 +182,8 @@ sub new {
         _connections => {},
         _nodes       => $params{startup_nodes},
         _password    => $params{password},
+        ( $params->{ssl} ? ( _ssl => $params->{ssl} ) : () ),
+        ( $params->{ssl_verify_mode} ? ( _ssl_verify_mode => $params->{ssl_verify_mode} ) : () ),
     };
     $self->{no_slots_initialization} = 1 if $params{no_slots_initialization};
 
@@ -623,6 +635,8 @@ sub _connect_to_node {
             port        => $node->{port},
             raise_error => 0,
             password    => $self->{_password},
+            ( $self->{_ssl} ? ( ssl => $self->{_ssl} ) : () ),
+            ( $self->{_ssl_verify_mode} ? ( ssl_verify_mode => $self->{_ssl_verify_mode} ) : () ),
         );
         $self->{_connections}{$host_key} = $redis->{_socket} ? $redis : undef;
     }

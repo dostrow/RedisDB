@@ -9,6 +9,7 @@ $VERSION = eval $VERSION;
 use RedisDB::Error;
 use RedisDB::Parser;
 use IO::Socket::IP;
+use IO::Socket::SSL;
 use IO::Socket::UNIX;
 use Socket qw(MSG_DONTWAIT MSG_NOSIGNAL SO_RCVTIMEO SO_SNDTIMEO);
 use POSIX qw(:errno_h);
@@ -137,6 +138,16 @@ is done by default callback. This may be useful to switch to backup server if
 primary went down. RedisDB distribution includes an example of using this
 callback in eg/server_failover.pl.
 
+=item ssl
+
+When set connect using SSL/TLS. This requires IO::Socket::SSL. Default value is
+0, set to 1 to enable.
+
+=item ssl_verify_mode
+
+This parameter sets the verification mode when C<ssl> is enabled. It defaults to
+SSL_VERIFY_PEER. See IO:Socket::SSL documentation for additional options.
+
 =back
 
 =cut
@@ -164,6 +175,8 @@ sub new {
     $self->{reconnect_attempts}  ||= 1;
     $self->{reconnect_delay_max} ||= 10;
     $self->{on_connect_error}    ||= \&_on_connect_error;
+    $self->{ssl} ||= 0;
+    $self->{ssl_verify_mode} ||= 'SSL_VERIFY_PEER';
     $self->_init_parser;
     $self->_connect unless $self->{lazy};
     return $self;
@@ -309,12 +322,22 @@ sub _connect {
             my $delay;
             while ( not $self->{_socket} and $attempts ) {
                 sleep $delay if $delay;
-                $self->{_socket} = IO::Socket::IP->new(
-                    PeerAddr => $self->{host},
-                    PeerPort => $self->{port},
-                    Proto    => 'tcp',
-                    ( $self->{timeout} ? ( Timeout => $self->{timeout} ) : () ),
-                ) or $error = $!;
+                if ( $self->{tls} ) {
+                    $self->{_socket} = IO::Socket::SSL->new(
+                        PeerHost => $self->{host},
+                        PeerPort => $self->{port},
+                        SSL_verify_mode => $self->{ssl_verify_mode},
+                        ( $self->{timeout} ? ( Timeout => $self->{timeout} ) : () ),
+                    ) or $error = $!;
+                }
+                else {
+                    $self->{_socket} = IO::Socket::IP->new(
+                        PeerAddr => $self->{host},
+                        PeerPort => $self->{port},
+                        Proto    => 'tcp',
+                        ( $self->{timeout} ? ( Timeout => $self->{timeout} ) : () ),
+                    ) or $error = $!;
+                }
                 $delay = $delay ? ( 1 + rand ) * $delay : 1;
                 $delay = $self->{reconnect_delay_max} if $delay > $self->{reconnect_delay_max};
                 $attempts--;
@@ -439,7 +462,9 @@ sub _recv_data_nb {
     $self->{_socket}->blocking(0) if $SET_NB;
 
     while (1) {
-        my $ret = recv( $self->{_socket}, my $buf, 131072, $DONTWAIT );
+        # IO::Socket::SSL only reads a single frame at a time.
+        my $bufsize = $self->{ssl} ? 16384 : 131072;
+        my $ret = recv( $self->{_socket}, my $buf, $bufsize, $DONTWAIT );
         unless ( defined $ret ) {
 
             # socket is connected, no data in recv buffer
@@ -664,7 +689,9 @@ sub mainloop {
 
     while ( $self->{_parser}->callbacks ) {
         croak "You can't call mainloop in the child process" unless $self->{_pid} == $$;
-        my $ret = recv( $self->{_socket}, my $buffer, 131073, 0 );
+        # IO::Socket::SSL only reads a single frame at a time.
+        my $bufsize = $self->{ssl} ? 16384 : 131072;
+        my $ret = recv( $self->{_socket}, my $buffer, $bufsize, 0 );
         unless ( defined $ret ) {
             next if $! == EINTR;
             if ( $! == EAGAIN ) {
@@ -711,7 +738,9 @@ sub get_reply {
       or $self->{_subscription_loop};
     croak "You can't read reply in child process" unless $self->{_pid} == $$;
     while ( not @{ $self->{_replies} } ) {
-        my $ret = recv( $self->{_socket}, my $buffer, 131074, 0 );
+        # IO::Socket::SSL only reads a single frame at a time.
+        my $bufsize = $self->{ssl} ? 16384 : 131072;
+        my $ret = recv( $self->{_socket}, my $buffer, $bufsize, 0 );
         if ( not defined $ret ) {
             next if $! == EINTR or $! == 0;
             my $err;
